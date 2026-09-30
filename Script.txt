@@ -1,0 +1,957 @@
+if not game then return end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local ProximityPromptSvc = game:GetService("ProximityPromptService")
+local TweenService = game:GetService("TweenService")
+local player = Players.LocalPlayer
+
+local EggState, AreasData, RarityData, AssetsData, PetsData
+local AreaEggDropGuiController
+
+pcall(function() EggState = require(ReplicatedStorage.Client.EggState) end)
+pcall(function() AreasData = require(ReplicatedStorage.Data.Areas) end)
+pcall(function() RarityData = require(ReplicatedStorage.Data.Rarity) end)
+pcall(function() AssetsData = require(ReplicatedStorage.Data.Assets) end)
+pcall(function() PetsData = require(ReplicatedStorage.Data.Pets) end)
+pcall(function() AreaEggDropGuiController = require(ReplicatedStorage.Controllers.GUI.AreaEggDropGuiController) end)
+
+local RARITY_SCORE_MAP = {
+    ["Light & Dark"]    = 1300, ["Titan"]           = 1100,
+    ["Divine"]          = 1000, ["Transcendent"]    = 1000,
+    ["Superior"]        = 1000, ["Eternal"]         = 900,
+    ["Limited"]         = 900,  ["Secret"]          = 800,
+    ["Exotic"]          = 800,  ["Cosmic"]          = 700,
+    ["Exclusive"]       = 700,  ["Admin"]           = 700,
+    ["Mythic"]          = 600,  ["Mythical"]        = 600,
+    ["Prismatic"]       = 600,  ["Rainbow"]         = 600,
+    ["Squishy God"]     = 600,  ["BrainrotGod"]     = 600,
+    ["Legendary"]       = 500,  ["Epic"]            = 400,
+    ["Rare"]            = 300,  ["SuperRare"]       = 200,
+    ["Celestial"]       = 200,  ["Uncommon"]        = 200,
+    ["Basic"]           = 100,  ["Common"]          = 100,
+}
+
+local preservar = {
+    "syniclzhub", "syniclz", "delta", "executor", "fluxus", 
+    "arceus", "codex", "roblox", "chat", "core", "prompt", "interact", 
+    "hold", "press", "action", "hud", "inventory", "item", "pickup",
+    "proximity", "dialog", "bar", "health", "stamina", "touch"
+}
+
+local termosHubs = {
+    "miranda", "foxname", "orion", "rayfield", "kavo", "fluent", 
+    "windui", "venom", "loader", "uilib", "library"
+}
+
+local function devePreservar(nome)
+    local n = nome:lower()
+    for _, termo in ipairs(preservar) do
+        if n:find(termo) then return true end
+    end
+    return false
+end
+
+local function ehHubSecundario(nome)
+    local n = nome:lower()
+    for _, termo in ipairs(termosHubs) do
+        if n:find(termo) then return true end
+    end
+    return false
+end
+
+local function esconderOuDestruirUI(parent)
+    if not parent then return end
+    for _, gui in ipairs(parent:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            local nome = gui.Name
+            if not devePreservar(nome) and ehHubSecundario(nome) then
+                pcall(function()
+                    gui.Enabled = false
+                    gui:Destroy()
+                end)
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        pcall(function()
+            local pGui = player:FindFirstChild("PlayerGui")
+            if pGui then esconderOuDestruirUI(pGui) end
+            local hui = (gethui and gethui()) or game:GetService("CoreGui")
+            if hui then esconderOuDestruirUI(hui) end
+        end)
+    end
+end)
+
+local TEMA = {
+    fundo      = Color3.fromRGB(24, 18, 38),
+    painel     = Color3.fromRGB(38, 28, 58),
+    destaque   = Color3.fromRGB(180, 140, 255),
+    texto      = Color3.fromRGB(240, 235, 255),
+    textoFraco = Color3.fromRGB(160, 145, 190),
+    verde      = Color3.fromRGB(180, 140, 255),
+    vermelho   = Color3.fromRGB(200, 80, 120),
+    borda      = Color3.fromRGB(80, 60, 120),
+}
+
+local teleGuiadoAtivo = false
+local melhorOvoAtual = nil
+local teleGuiadoConnection = nil
+local autoPegarAtivo = false
+
+-- ============================================================
+-- SISTEMA TP NESTS
+-- ============================================================
+local tpEnabled = false
+local tpLoopConn = nil
+local tpCachedPos = nil
+local RESPAWN_WAIT = 2
+local VOO_VELOCIDADE = 150
+local VELOCIDADE_TELEGUIADO = 190
+local personagemMorreu = false
+local voandoAgora = false
+
+local COORDENADA_VIVO = Vector3.new(599.46, 70.58, -325.73)
+local COORDENADA_MORTO = Vector3.new(600.02, 70.58, -327.76)
+
+local function getSpawnPosition()
+    local spawnLocation = Workspace:FindFirstChildOfClass("SpawnLocation")
+    if spawnLocation then
+        return spawnLocation.Position + Vector3.new(0, 5, 0)
+    end
+    
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d.Name == "Spawn" and d:IsA("BasePart") then
+            return d.Position + Vector3.new(0, 5, 0)
+        end
+        if d.Name == "SpawnLocation" and d:IsA("BasePart") then
+            return d.Position + Vector3.new(0, 5, 0)
+        end
+    end
+    
+    return Vector3.new(0, 50, 0)
+end
+
+local function isSmartPrompt(prompt)
+    if not prompt or not prompt.Parent then return false end
+    if prompt.Name == "CarryAreaEgg" then return true end
+    if prompt.Parent.Name == "SmartPromptPart" then return true end
+    local p, depth = prompt.Parent, 0
+    while p and p ~= Workspace and depth < 15 do
+        if p.Name == "SmartPromptPart" then return true end
+        p = p.Parent
+        depth += 1
+    end
+    return false
+end
+
+local function stopTpLoop()
+    if tpLoopConn then
+        tpLoopConn:Disconnect()
+        tpLoopConn = nil
+    end
+end
+
+local function startTpLoop()
+    stopTpLoop()
+    tpCachedPos = COORDENADA_VIVO
+    if not tpCachedPos then return end
+
+    tpLoopConn = RunService.Heartbeat:Connect(function()
+        if not tpEnabled then
+            stopTpLoop()
+            return
+        end
+        if voandoAgora then return end
+        if personagemMorreu then return end
+        
+        local char = player.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and tpCachedPos then
+            hrp.CFrame = CFrame.new(tpCachedPos) * (hrp.CFrame - hrp.CFrame.Position)
+        end
+    end)
+end
+
+local function doTeleport(withLoop)
+    if teleGuiadoAtivo then
+        pararTeleGuiado()
+    end
+
+    local destino = COORDENADA_VIVO
+    if not destino then return end
+
+    local char = player.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    hrp.CFrame = CFrame.new(destino) * (hrp.CFrame - hrp.CFrame.Position)
+
+    if withLoop then
+        startTpLoop()
+    end
+end
+
+local function tryTeleport(prompt, triggeringPlayer)
+    if not tpEnabled then return end
+    if triggeringPlayer and triggeringPlayer ~= player then return end
+    if not isSmartPrompt(prompt) then return end
+    if personagemMorreu then return end
+    if voandoAgora then return end
+    doTeleport(true)
+end
+
+local watched = setmetatable({}, {__mode = "k"})
+local function watchPrompt(prompt)
+    if watched[prompt] then return end
+    watched[prompt] = true
+    prompt.Triggered:Connect(function(triggeringPlayer)
+        tryTeleport(prompt, triggeringPlayer)
+    end)
+end
+
+for _, d in ipairs(Workspace:GetDescendants()) do
+    if d:IsA("ProximityPrompt") then watchPrompt(d) end
+end
+
+Workspace.DescendantAdded:Connect(function(d)
+    if d:IsA("ProximityPrompt") then watchPrompt(d) end
+end)
+
+ProximityPromptSvc.PromptTriggered:Connect(function(prompt, triggeringPlayer)
+    tryTeleport(prompt, triggeringPlayer)
+end)
+ProximityPromptSvc.PromptButtonHoldEnded:Connect(function(prompt, triggeringPlayer)
+    tryTeleport(prompt, triggeringPlayer)
+end)
+
+-- ============================================================
+-- FUNÇÃO: Encontrar ProximityPrompt perto de uma posição
+-- ============================================================
+local function encontrarPromptPerto(posicao, raio)
+    raio = raio or 25
+    local melhorPrompt = nil
+    local menorDistancia = math.huge
+    
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then
+            local parentPart = d.Parent
+            if parentPart and parentPart:IsA("BasePart") then
+                local dist = (parentPart.Position - posicao).Magnitude
+                if dist < raio and dist < menorDistancia then
+                    menorDistancia = dist
+                    melhorPrompt = d
+                end
+            end
+        end
+    end
+    
+    return melhorPrompt
+end
+
+-- ============================================================
+-- FUNÇÃO: Pega o ovo baseado na posição do ovo
+-- ============================================================
+local function pegarOvoPelaPosicao(eggRecord)
+    if not eggRecord or not eggRecord.BoundsCFrame then return false end
+    
+    local eggPos = eggRecord.BoundsCFrame.Position
+    local melhorPrompt = encontrarPromptPerto(eggPos, 25)
+    
+    if not melhorPrompt then return false end
+    
+    for tentativa = 1, 5 do
+        if fireproximityprompt then
+            pcall(function() fireproximityprompt(melhorPrompt) end)
+        end
+        pcall(function() ProximityPromptSvc:InputHoldBegin(melhorPrompt, player) end)
+        pcall(function() melhorPrompt:InputHoldBegin() end)
+        task.wait(0.15)
+    end
+    
+    return true
+end
+
+-- ============================================================
+-- 👈 FUNÇÃO PÓS-MORTE - VAI PRA COORDENADA_MORTO (ovo dropado)
+-- ============================================================
+local function correrParaOvoDropadoEPegar(duracaoMax)
+    local char = player.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    voandoAgora = true
+    hum.WalkSpeed = VOO_VELOCIDADE
+
+    local inicio = tick()
+    local chegouNaCoordenada = false
+    local conn
+    
+    conn = RunService.Heartbeat:Connect(function()
+        local char2 = player.Character
+        local hrp2 = char2 and char2:FindFirstChild("HumanoidRootPart")
+        local hum2 = char2 and char2:FindFirstChildOfClass("Humanoid")
+        if not hrp2 or not hum2 then
+            conn:Disconnect()
+            voandoAgora = false
+            personagemMorreu = false
+            return
+        end
+
+        -- Vai pra COORDENADA_MORTO (ovo dropado)
+        local atual = hrp2.Position
+        local direcao = (COORDENADA_MORTO - atual)
+        local distancia = direcao.Magnitude
+
+        if distancia < 3 and not chegouNaCoordenada then
+            hrp2.CFrame = CFrame.new(COORDENADA_MORTO) * (hrp2.CFrame - hrp2.CFrame.Position)
+            hum2:Move(Vector3.zero, false)
+            hum2.WalkSpeed = 0
+            chegouNaCoordenada = true
+            conn:Disconnect()
+            
+            -- 👈 PEGA O PROMPT (10 tentativas)
+            task.spawn(function()
+                task.wait(0.3)
+                
+                for tentativa = 1, 10 do
+                    local promptAlvo = encontrarPromptPerto(COORDENADA_MORTO, 25)
+                    if promptAlvo then
+                        if fireproximityprompt then
+                            pcall(function() fireproximityprompt(promptAlvo) end)
+                        end
+                        pcall(function() ProximityPromptSvc:InputHoldBegin(promptAlvo, player) end)
+                        pcall(function() promptAlvo:InputHoldBegin() end)
+                        task.wait(0.2)
+                    else
+                        task.wait(0.1)
+                    end
+                end
+                
+                task.wait(0.5)
+                
+                -- 👈 DEPOIS → CORRE PRO SPAWN
+                local spawnPos = getSpawnPosition()
+                if spawnPos then
+                    local c = player.Character
+                    local h = c and c:FindFirstChild("HumanoidRootPart")
+                    local hu = c and c:FindFirstChildOfClass("Humanoid")
+                    
+                    if h and hu then
+                        hu.WalkSpeed = VOO_VELOCIDADE
+                        
+                        local inicioSpawn = tick()
+                        local connSpawn
+                        connSpawn = RunService.Heartbeat:Connect(function()
+                            local c2 = player.Character
+                            local h2 = c2 and c2:FindFirstChild("HumanoidRootPart")
+                            local hu2 = c2 and c2:FindFirstChildOfClass("Humanoid")
+                            if not h2 or not hu2 then
+                                connSpawn:Disconnect()
+                                voandoAgora = false
+                                personagemMorreu = false
+                                return
+                            end
+                            
+                            local dist = (spawnPos - h2.Position).Magnitude
+                            if dist < 3 then
+                                h2.CFrame = CFrame.new(spawnPos) * (h2.CFrame - h2.CFrame.Position)
+                                hu2.WalkSpeed = 16
+                                voandoAgora = false
+                                personagemMorreu = false
+                                connSpawn:Disconnect()
+                                return
+                            end
+                            
+                            hu2:MoveTo(spawnPos)
+                            
+                            if (tick() - inicioSpawn) > 30 then
+                                hu2.WalkSpeed = 16
+                                voandoAgora = false
+                                personagemMorreu = false
+                                connSpawn:Disconnect()
+                            end
+                        end)
+                    end
+                end
+            end)
+            return
+        end
+
+        if not chegouNaCoordenada then
+            hum2:MoveTo(COORDENADA_MORTO)
+        end
+
+        if duracaoMax and (tick() - inicio) > duracaoMax then
+            hum2.WalkSpeed = 16
+            voandoAgora = false
+            personagemMorreu = false
+            conn:Disconnect()
+        end
+    end)
+end
+
+local lastDeathCFrame = nil
+
+local function hookCharacter(char)
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+    humanoid.Died:Connect(function()
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            lastDeathCFrame = hrp.CFrame
+        end
+        personagemMorreu = true
+        stopTpLoop()
+    end)
+end
+
+player.CharacterAdded:Connect(function(char)
+    hookCharacter(char)
+    
+    if personagemMorreu and tpEnabled then
+        task.spawn(function()
+            task.wait(RESPAWN_WAIT)
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            if not hrp then return end
+            if hrp.Parent then
+                correrParaOvoDropadoEPegar(20)
+            end
+        end)
+    else
+        personagemMorreu = false
+    end
+end)
+
+if player.Character then
+    hookCharacter(player.Character)
+end
+
+-- ============================================================
+-- INTERFACE PRINCIPAL
+-- ============================================================
+
+local guiParent
+if gethui then
+    local ok, result = pcall(gethui)
+    if ok and result then guiParent = result end
+end
+if not guiParent then
+    guiParent = player:WaitForChild("PlayerGui", 10)
+end
+if not guiParent then
+    guiParent = game:GetService("CoreGui")
+end
+
+local SG = Instance.new("ScreenGui")
+SG.Name = "SyniclzHubV1"
+SG.ResetOnSpawn = false
+SG.IgnoreGuiInset = true
+SG.DisplayOrder = 999999999
+SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+SG.Enabled = true
+SG.Parent = guiParent
+
+local Main = Instance.new("Frame")
+Main.Name = "MainPanel"
+Main.Size = UDim2.new(0, 320, 0, 220)
+Main.Position = UDim2.new(0.5, -160, 0.5, -110)
+Main.BackgroundColor3 = TEMA.fundo
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Visible = true
+Main.ZIndex = 10
+Main.Parent = SG
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = TEMA.destaque
+MainStroke.Thickness = 1.5
+MainStroke.Transparency = 0.3
+MainStroke.Parent = Main
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 45)
+Header.BackgroundColor3 = TEMA.painel
+Header.BorderSizePixel = 0
+Header.Parent = Main
+
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 12)
+HeaderCorner.Parent = Header
+
+local Logo = Instance.new("TextLabel")
+Logo.Size = UDim2.new(0, 200, 0, 20)
+Logo.Position = UDim2.new(0, 15, 0, 5)
+Logo.BackgroundTransparency = 1
+Logo.Text = "SYNICLZ HUB"
+Logo.TextColor3 = TEMA.texto
+Logo.Font = Enum.Font.GothamBlack
+Logo.TextSize = 16
+Logo.TextXAlignment = Enum.TextXAlignment.Left
+Logo.Parent = Header
+
+local Versao = Instance.new("TextLabel")
+Versao.Size = UDim2.new(0, 200, 0, 15)
+Versao.Position = UDim2.new(0, 16, 0, 22)
+Versao.BackgroundTransparency = 1
+Versao.Text = "BEST EGG SYSTEM"
+Versao.TextColor3 = TEMA.textoFraco
+Versao.Font = Enum.Font.Gotham
+Versao.TextSize = 10
+Versao.TextXAlignment = Enum.TextXAlignment.Left
+Versao.Parent = Header
+
+local BtnDiscord = Instance.new("TextButton")
+BtnDiscord.Size = UDim2.new(0, 28, 0, 28)
+BtnDiscord.Position = UDim2.new(1, -70, 0, 8)
+BtnDiscord.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+BtnDiscord.Text = "D"
+BtnDiscord.TextColor3 = TEMA.texto
+BtnDiscord.Font = Enum.Font.GothamBold
+BtnDiscord.TextSize = 14
+BtnDiscord.Parent = Header
+
+local BtnDiscordCorner = Instance.new("UICorner")
+BtnDiscordCorner.CornerRadius = UDim.new(0, 14)
+BtnDiscordCorner.Parent = BtnDiscord
+
+local BtnFechar = Instance.new("TextButton")
+BtnFechar.Size = UDim2.new(0, 28, 0, 28)
+BtnFechar.Position = UDim2.new(1, -36, 0, 8)
+BtnFechar.BackgroundColor3 = TEMA.painel
+BtnFechar.Text = "X"
+BtnFechar.TextColor3 = TEMA.texto
+BtnFechar.Font = Enum.Font.GothamBold
+BtnFechar.TextSize = 14
+BtnFechar.Parent = Header
+
+local BtnFecharCorner = Instance.new("UICorner")
+BtnFecharCorner.CornerRadius = UDim.new(0, 6)
+BtnFecharCorner.Parent = BtnFechar
+
+local Content = Instance.new("Frame")
+Content.Size = UDim2.new(1, -20, 1, -55)
+Content.Position = UDim2.new(0, 10, 0, 45)
+Content.BackgroundTransparency = 1
+Content.Parent = Main
+
+local EggBox = Instance.new("Frame")
+EggBox.Size = UDim2.new(1, 0, 0, 70)
+EggBox.BackgroundColor3 = TEMA.painel
+EggBox.BorderSizePixel = 0
+EggBox.Parent = Content
+
+local EggBoxCorner = Instance.new("UICorner")
+EggBoxCorner.CornerRadius = UDim.new(0, 8)
+EggBoxCorner.Parent = EggBox
+
+local EggBoxStroke = Instance.new("UIStroke")
+EggBoxStroke.Color = TEMA.borda
+EggBoxStroke.Thickness = 1
+EggBoxStroke.Parent = EggBox
+
+local PetIcon = Instance.new("ImageLabel")
+PetIcon.Size = UDim2.new(0, 50, 0, 50)
+PetIcon.Position = UDim2.new(0, 10, 0, 10)
+PetIcon.BackgroundTransparency = 1
+PetIcon.ScaleType = Enum.ScaleType.Fit
+PetIcon.Image = "rbxassetid://0"
+PetIcon.Parent = EggBox
+
+local EggName = Instance.new("TextLabel")
+EggName.Size = UDim2.new(0, 150, 0, 20)
+EggName.Position = UDim2.new(0, 70, 0, 12)
+EggName.BackgroundTransparency = 1
+EggName.Text = "Aguardando..."
+EggName.TextColor3 = TEMA.texto
+EggName.Font = Enum.Font.GothamBold
+EggName.TextSize = 14
+EggName.TextXAlignment = Enum.TextXAlignment.Left
+EggName.Parent = EggBox
+
+local EggRarity = Instance.new("TextLabel")
+EggRarity.Size = UDim2.new(0, 150, 0, 15)
+EggRarity.Position = UDim2.new(0, 70, 0, 32)
+EggRarity.BackgroundTransparency = 1
+EggRarity.Text = "Raridade"
+EggRarity.TextColor3 = TEMA.destaque
+EggRarity.Font = Enum.Font.Gotham
+EggRarity.TextSize = 11
+EggRarity.TextXAlignment = Enum.TextXAlignment.Left
+EggRarity.Parent = EggBox
+
+local EggTimer = Instance.new("TextLabel")
+EggTimer.Size = UDim2.new(0, 80, 0, 15)
+EggTimer.Position = UDim2.new(1, -90, 0, 32)
+EggTimer.BackgroundTransparency = 1
+EggTimer.Text = "12:00 AM"
+EggTimer.TextColor3 = TEMA.verde
+EggTimer.Font = Enum.Font.GothamBold
+EggTimer.TextSize = 12
+EggTimer.TextXAlignment = Enum.TextXAlignment.Right
+EggTimer.Parent = EggBox
+
+local ArrowIcon = Instance.new("TextLabel")
+ArrowIcon.Size = UDim2.new(0, 20, 0, 20)
+ArrowIcon.Position = UDim2.new(1, -25, 0, 8)
+ArrowIcon.BackgroundTransparency = 1
+ArrowIcon.Text = "▼"
+ArrowIcon.TextColor3 = TEMA.textoFraco
+ArrowIcon.Font = Enum.Font.GothamBold
+ArrowIcon.TextSize = 12
+ArrowIcon.Parent = EggBox
+
+local BtnTeleGuiado = Instance.new("TextButton")
+BtnTeleGuiado.Size = UDim2.new(1, 0, 0, 36)
+BtnTeleGuiado.Position = UDim2.new(0, 0, 0, 78)
+BtnTeleGuiado.BackgroundColor3 = TEMA.painel
+BtnTeleGuiado.Text = "TELEGUIADO: OFF"
+BtnTeleGuiado.TextColor3 = TEMA.vermelho
+BtnTeleGuiado.Font = Enum.Font.GothamBold
+BtnTeleGuiado.TextSize = 12
+BtnTeleGuiado.Parent = Content
+
+local BtnTeleGuiadoCorner = Instance.new("UICorner")
+BtnTeleGuiadoCorner.CornerRadius = UDim.new(0, 6)
+BtnTeleGuiadoCorner.Parent = BtnTeleGuiado
+
+local BtnTpNests = Instance.new("TextButton")
+BtnTpNests.Size = UDim2.new(1, 0, 0, 36)
+BtnTpNests.Position = UDim2.new(0, 0, 0, 120)
+BtnTpNests.BackgroundColor3 = TEMA.painel
+BtnTpNests.Text = "TP NESTS: OFF"
+BtnTpNests.TextColor3 = TEMA.vermelho
+BtnTpNests.Font = Enum.Font.GothamBold
+BtnTpNests.TextSize = 12
+BtnTpNests.Parent = Content
+
+local BtnTpNestsCorner = Instance.new("UICorner")
+BtnTpNestsCorner.CornerRadius = UDim.new(0, 6)
+BtnTpNestsCorner.Parent = BtnTpNests
+
+BtnTpNests.MouseButton1Click:Connect(function()
+    tpEnabled = not tpEnabled
+    if tpEnabled then
+        BtnTpNests.Text = "TP NESTS: ON"
+        BtnTpNests.TextColor3 = TEMA.verde
+    else
+        BtnTpNests.Text = "TP NESTS: OFF"
+        BtnTpNests.TextColor3 = TEMA.vermelho
+        stopTpLoop()
+    end
+end)
+
+local BtnFloat = Instance.new("TextButton")
+BtnFloat.Size = UDim2.new(0, 50, 0, 50)
+BtnFloat.Position = UDim2.new(0, 15, 0.5, -25)
+BtnFloat.BackgroundColor3 = TEMA.destaque
+BtnFloat.Text = "S"
+BtnFloat.TextColor3 = TEMA.fundo
+BtnFloat.Font = Enum.Font.GothamBlack
+BtnFloat.TextSize = 20
+BtnFloat.ZIndex = 10
+BtnFloat.Visible = false
+BtnFloat.Parent = SG
+
+local BtnFloatCorner = Instance.new("UICorner")
+BtnFloatCorner.CornerRadius = UDim.new(0, 25)
+BtnFloatCorner.Parent = BtnFloat
+
+local BtnFloatStroke = Instance.new("UIStroke")
+BtnFloatStroke.Color = TEMA.destaque
+BtnFloatStroke.Thickness = 2
+BtnFloatStroke.Transparency = 0.3
+BtnFloatStroke.Parent = BtnFloat
+
+local dragando = false
+local movendo = false
+local dragStart = nil
+local startPos = nil
+
+BtnFloat.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragando = true
+        movendo = false
+        dragStart = input.Position
+        startPos = BtnFloat.Position
+    end
+end)
+
+BtnFloat.InputChanged:Connect(function(input)
+    if dragando and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        if delta.Magnitude > 6 then movendo = true end
+        if movendo then
+            BtnFloat.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragando = false
+    end
+end)
+
+local function abrir()
+    BtnFloat.Visible = false
+    Main.Visible = true
+end
+
+local function fechar()
+    Main.Visible = false
+    BtnFloat.Visible = true
+end
+
+BtnFloat.MouseButton1Click:Connect(function()
+    if not movendo then abrir() end
+end)
+BtnFechar.MouseButton1Click:Connect(fechar)
+
+local function GetEggRarityInfo(egg)
+    if not egg then return "Common", 100 end
+    if egg.Rarity then
+        local r = egg.Rarity
+        local name = type(r) == "table" and (r.DisplayName or r._id or r.Name) or tostring(r)
+        return name, RARITY_SCORE_MAP[name] or 100
+    end
+    local cat = egg.AssetCategory or egg.Category or egg.Name
+    if cat and AssetsData then
+        local aInfo = (AssetsData.Directory or AssetsData)[cat]
+        if aInfo and aInfo.Rarity then
+            local r = aInfo.Rarity
+            local name = type(r) == "table" and (r.DisplayName or r._id or r.Name) or tostring(r)
+            return name, RARITY_SCORE_MAP[name] or 100
+        end
+    end
+    local areaData = AreasData and (AreasData.Directory or AreasData) and (AreasData.Directory or AreasData)[egg.AreaId]
+    local rarity = areaData and areaData.Rarity
+    local rarityId = (type(rarity) == "table" and (rarity._id or rarity.DisplayName or rarity.Name)) or (type(rarity) == "string" and rarity) or "Common"
+    local rInfo = (RarityData and (RarityData.Rarities or RarityData) or {})[rarityId] or {}
+    local rarityDisplayName = (type(rInfo) == "table" and (rInfo.DisplayName or rInfo._id)) or (type(rarity) == "table" and rarity.DisplayName) or rarityId or "Common"
+    return rarityDisplayName, RARITY_SCORE_MAP[rarityDisplayName] or 100
+end
+
+local function GetPetIcon(record)
+    if not record then return nil end
+    local rawIcon = record.Icon or record.PetIcon or record.ImageAsset or record.TextureId
+    if rawIcon then
+        return (type(rawIcon) == "number" or not string.match(tostring(rawIcon), "://")) and ("rbxassetid://" .. tostring(rawIcon)) or tostring(rawIcon)
+    end
+    local targetName = record.Pet or record.PetId or record.PetName or record.AssetCategory or record.Category
+    if targetName then
+        if PetsData then
+            local pInfo = (PetsData.Directory or PetsData)[targetName]
+            if pInfo and (pInfo.Icon or pInfo.Image or pInfo.AssetId) then
+                local img = pInfo.Icon or pInfo.Image or pInfo.AssetId
+                return (type(img) == "number" or not string.match(tostring(img), "://")) and ("rbxassetid://" .. tostring(img)) or tostring(img)
+            end
+        end
+        if AssetsData then
+            local aInfo = (AssetsData.Directory or AssetsData)[targetName]
+            if aInfo and (aInfo.Icon or aInfo.Image or aInfo.AssetId) then
+                local img = aInfo.Icon or aInfo.Image or aInfo.AssetId
+                return (type(img) == "number" or not string.match(tostring(img), "://")) and ("rbxassetid://" .. tostring(img)) or tostring(img)
+            end
+        end
+    end
+    return nil
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        pcall(function()
+            if not EggState or not EggState.ReadFieldEggs then return end
+            local ok, snapshot = pcall(EggState.ReadFieldEggs)
+            if ok and snapshot and snapshot.Records then
+                local bestEgg = nil
+                local bestScore = -1
+
+                for _, record in ipairs(snapshot.Records) do
+                    if record.State == "Slot" and record.BoundsCFrame then
+                        local rarityName, score = GetEggRarityInfo(record)
+                        if score > bestScore then
+                            bestScore = score
+                            bestEgg = record
+                        end
+                    end
+                end
+
+                if bestEgg then
+                    melhorOvoAtual = bestEgg
+                    local rarityName, _ = GetEggRarityInfo(bestEgg)
+                    local iconId = GetPetIcon(bestEgg)
+                    
+                    EggName.Text = bestEgg.AssetCategory or "Ovo Desconhecido"
+                    EggRarity.Text = rarityName
+                    if bestScore >= 1000 then
+                        EggRarity.TextColor3 = Color3.fromRGB(255, 215, 0)
+                    elseif bestScore >= 600 then
+                        EggRarity.TextColor3 = TEMA.destaque
+                    elseif bestScore >= 400 then
+                        EggRarity.TextColor3 = Color3.fromRGB(140, 120, 220)
+                    else
+                        EggRarity.TextColor3 = TEMA.destaque
+                    end
+
+                    if iconId then
+                        PetIcon.Image = iconId
+                        PetIcon.Visible = true
+                    else
+                        PetIcon.Visible = false
+                    end
+                    EggTimer.Text = "12:00 AM"
+                else
+                    melhorOvoAtual = nil
+                    EggName.Text = "Nenhum Ovo"
+                    EggRarity.Text = "Aguardando..."
+                    EggRarity.TextColor3 = TEMA.textoFraco
+                    PetIcon.Visible = false
+                end
+            end
+        end)
+    end
+end)
+
+-- ============================================================
+-- 👈 FUNÇÃO pararTeleGuiado CORRIGIDA
+-- ============================================================
+function pararTeleGuiado()
+    teleGuiadoAtivo = false
+    autoPegarAtivo = false
+    
+    -- 👈 DESCONECTA O LOOP
+    if teleGuiadoConnection then
+        teleGuiadoConnection:Disconnect()
+        teleGuiadoConnection = nil
+    end
+    
+    -- 👈 CANCELA O MOVIMENTO DO PERSONAGEM
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = 16
+        hum:Move(Vector3.zero, false)
+    end
+    
+    BtnTeleGuiado.Text = "TELEGUIADO: OFF"
+    BtnTeleGuiado.TextColor3 = TEMA.vermelho
+end
+
+-- ============================================================
+-- 👈 FUNÇÃO iniciarTeleGuiado CORRIGIDA
+-- ============================================================
+local function iniciarTeleGuiado()
+    if not melhorOvoAtual then
+        BtnTeleGuiado.Text = "NENHUM OVO"
+        BtnTeleGuiado.TextColor3 = TEMA.vermelho
+        task.wait(1.5)
+        BtnTeleGuiado.Text = "TELEGUIADO: OFF"
+        return
+    end
+
+    -- 👈 DESCONECTA QUALQUER LOOP ANTIGO
+    if teleGuiadoConnection then
+        teleGuiadoConnection:Disconnect()
+        teleGuiadoConnection = nil
+    end
+
+    autoPegarAtivo = false
+    teleGuiadoAtivo = true
+    BtnTeleGuiado.Text = "TELEGUIADO: ON"
+    BtnTeleGuiado.TextColor3 = TEMA.verde
+
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = VELOCIDADE_TELEGUIADO
+    end
+
+    teleGuiadoConnection = RunService.Heartbeat:Connect(function()
+        -- 👈 SE DESATIVADO, DESCONECTA O LOOP
+        if not teleGuiadoAtivo then
+            if teleGuiadoConnection then
+                teleGuiadoConnection:Disconnect()
+                teleGuiadoConnection = nil
+            end
+            return
+        end
+        
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        
+        if not hrp or not hum then return end
+        if not melhorOvoAtual or not melhorOvoAtual.BoundsCFrame then
+            pararTeleGuiado()
+            return
+        end
+
+        if hum.WalkSpeed ~= VELOCIDADE_TELEGUIADO then
+            hum.WalkSpeed = VELOCIDADE_TELEGUIADO
+        end
+
+        local targetPos = melhorOvoAtual.BoundsCFrame.Position
+        local distance = (targetPos - hrp.Position).Magnitude
+
+        if distance > 3 then
+            hum:MoveTo(targetPos)
+        else
+            local novaCFrame = CFrame.new(targetPos) * (hrp.CFrame - hrp.CFrame.Position)
+            hrp.CFrame = novaCFrame
+            
+            hum:Move(Vector3.zero, false)
+            hum.WalkSpeed = 0
+            
+            if not autoPegarAtivo then
+                autoPegarAtivo = true
+                
+                task.spawn(function()
+                    pegarOvoPelaPosicao(melhorOvoAtual)
+                end)
+                
+                task.wait(0.8)
+                pararTeleGuiado()
+            end
+        end
+    end)
+end
+
+BtnTeleGuiado.MouseButton1Click:Connect(function()
+    if teleGuiadoAtivo then
+        pararTeleGuiado()
+    else
+        iniciarTeleGuiado()
+    end
+end)
+
+task.wait(0.3)
+SG.Enabled = true
+Main.Visible = true
+BtnFloat.Visible = false
+
+if not SG.Parent or not SG.Parent:IsA("ScreenGui") then
+    pcall(function()
+        SG.Parent = player:WaitForChild("PlayerGui")
+    end)
+end
+
+print("✅ SYNICLZ HUB CARREGADO")
+print("   🏃 Teleguiado:", VELOCIDADE_TELEGUIADO, "studs/s")
+print("   💀 Pós-morte: coordenada do ovo dropado → pega prompt → spawn")
+print("   🔧 Teleguiado para corretamente ao desativar")
